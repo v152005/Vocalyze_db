@@ -1,15 +1,14 @@
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
-const { auth, getFirebaseConfigMessage } = require("../config/firebase");
 const userModel = require("../models/userModel");
 
 // Get JWT secret from environment variables
-const JWT_SECRET = process.env.JWT_SECRET || "default_jwt_secret_codefury_9_0";
+const JWT_SECRET = process.env.JWT_SECRET || "default_jwt_secret_vocalyze";
 
 /**
  * Hashes a password using PBKDF2.
- * @param {string} password 
- * @returns {object} { salt, hash }
+ * @param {string} password
+ * @returns {{ salt: string, hash: string }}
  */
 const hashPassword = (password) => {
   const salt = crypto.randomBytes(16).toString("hex");
@@ -18,11 +17,11 @@ const hashPassword = (password) => {
 };
 
 /**
- * Verifies a password against salt and hash.
- * @param {string} password 
- * @param {string} salt 
- * @param {string} hash 
- * @returns {boolean} True if password matches.
+ * Verifies a plain-text password against a stored PBKDF2 hash.
+ * @param {string} password
+ * @param {string} salt
+ * @param {string} hash
+ * @returns {boolean}
  */
 const verifyPassword = (password, salt, hash) => {
   const verifyHash = crypto.pbkdf2Sync(password, salt, 1000, 64, "sha512").toString("hex");
@@ -30,39 +29,38 @@ const verifyPassword = (password, salt, hash) => {
 };
 
 /**
- * Registers a user by creating them in Firebase Auth and saving metadata + hashed pass to Firestore.
+ * Registers a new user — stores credentials in MySQL only.
+ * No Firebase dependency.
+ * @param {string} name
+ * @param {string} email
+ * @param {string} password
+ * @returns {{ user: object, token: string }}
  */
 const registerUser = async (name, email, password) => {
-  if (!auth) {
-    throw new Error(getFirebaseConfigMessage());
-  }
+  const normalizedEmail = email.toLowerCase().trim();
 
-  const existingUser = await userModel.findUserByEmail(email);
+  const existingUser = await userModel.findUserByEmail(normalizedEmail);
   if (existingUser) {
     throw new Error("User already exists with this email");
   }
 
-  // Create user in Firebase Authentication
-  const userRecord = await auth.createUser({
-    email: email.toLowerCase().trim(),
-    password: password,
-    displayName: name,
-  });
-
-  // Hash password for secure Firestore fallback verification
+  // Hash password for secure MySQL storage
   const { salt, hash } = hashPassword(password);
 
-  // Save details to Firestore
-  await userModel.createUserDoc(userRecord.uid, {
+  // Generate a unique UID using Node.js built-in crypto (no external package)
+  const uid = crypto.randomUUID();
+
+  // Persist user to MySQL
+  await userModel.createUserDoc(uid, {
     name,
-    email: email.toLowerCase().trim(),
+    email: normalizedEmail,
     passwordHash: hash,
     salt,
   });
 
-  const user = { uid: userRecord.uid, name, email: email.toLowerCase().trim() };
+  const user = { uid, name, email: normalizedEmail };
 
-  // Generate JWT Token
+  // Issue a signed JWT
   const token = jwt.sign(
     { uid: user.uid, name: user.name, email: user.email },
     JWT_SECRET,
@@ -73,7 +71,10 @@ const registerUser = async (name, email, password) => {
 };
 
 /**
- * Authenticates user credentials using the database password hash and issues a JWT.
+ * Authenticates a user by email/password and issues a JWT.
+ * @param {string} email
+ * @param {string} password
+ * @returns {{ user: object, token: string }}
  */
 const authenticateUser = async (email, password) => {
   const user = await userModel.findUserByEmail(email);
@@ -86,21 +87,22 @@ const authenticateUser = async (email, password) => {
     throw new Error("Invalid email or password");
   }
 
-  // Generate JWT Token
   const token = jwt.sign(
-    { uid: user.id, name: user.name, email: user.email },
+    { uid: user.uid, name: user.name, email: user.email },
     JWT_SECRET,
     { expiresIn: "7d" }
   );
 
   return {
-    user: { uid: user.id, name: user.name, email: user.email },
+    user: { uid: user.uid, name: user.name, email: user.email },
     token,
   };
 };
 
 /**
- * Verifies a JWT token.
+ * Verifies a JWT and returns the decoded payload.
+ * @param {string} token
+ * @returns {object}
  */
 const verifyToken = (token) => {
   return jwt.verify(token, JWT_SECRET);

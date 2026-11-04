@@ -3,13 +3,14 @@
 <div align="center">
   <img src="client/public/vocalyze-logo.png" alt="Vocalyze Logo" width="140" height="140" style="border-radius: 50%; box-shadow: 0 0 25px rgba(217, 245, 96, 0.4);" />
   
-  <h3>Empowering Visually Impaired, Elderly & Multilingual Citizens with AI-Powered Voice Navigation and Accessible Public Services</h3>
+  <h3>Empowering Visually Impaired, Elderly &amp; Multilingual Citizens with AI-Powered Voice Navigation and Accessible Public Services</h3>
 
   <p>
     <a href="#-key-features">Features</a> •
     <a href="#-tech-stack">Tech Stack</a> •
     <a href="#-architecture--workflow">Architecture</a> •
     <a href="#-getting-started">Getting Started</a> •
+    <a href="#-mysql-database-setup">Database Setup</a> •
     <a href="#-api-documentation">API Reference</a> •
     <a href="#-voice-assistant-commands">Voice Guide</a>
   </p>
@@ -19,7 +20,7 @@
 
 ## 🌟 Overview
 
-**Vocalyze** is an assistive AI-driven digital governance platform designed to make essential public services (such as **Pension Certificates**, **Disability UDID Certificates**, and **Income Certificates**) completely accessible to everyone. 
+**Vocalyze** is an assistive AI-driven digital governance platform designed to make essential public services (such as **Pension Certificates**, **Disability UDID Certificates**, and **Income Certificates**) completely accessible to everyone.
 
 By combining **Web Speech Recognition**, **Real-time Neural Speech Synthesis**, **Multilingual NLP**, and **Computer Vision OCR**, Vocalyze enables blind, low-vision, illiterate, and motor-impaired individuals to interact with digital forms entirely hands-free using natural voice in their native language (**English**, **हिंदी (Hindi)**, and **ಕನ್ನಡ (Kannada)**).
 
@@ -66,9 +67,12 @@ By combining **Web Speech Recognition**, **Real-time Neural Speech Synthesis**, 
 
 ### Backend
 - **Runtime**: [Node.js](https://nodejs.org/) & [Express](https://expressjs.com/)
-- **AI & NLP**: [Google Gemini 1.5 Flash API](https://ai.google.dev/) (`@google/genai`)
-- **Database & Auth**: [Google Firebase Firestore & Firebase Admin Auth](https://firebase.google.com/)
-- **Security & Utilities**: CORS, dotenv, JSON Web Tokens (JWT)
+- **AI & NLP**: [Google Gemini API](https://ai.google.dev/) (`@google/generative-ai`)
+- **Database**: **[MySQL 8.0+](https://www.mysql.com/)** via **[MySQL Workbench](https://www.mysql.com/products/workbench/)** + [`mysql2`](https://www.npmjs.com/package/mysql2) driver
+- **Authentication**: Custom password hashing (PBKDF2-SHA512 via Node.js `crypto`) + **JSON Web Tokens (JWT)**
+- **Security & Utilities**: CORS, dotenv
+
+> **Note:** This project uses **MySQL only** — Firebase/Firestore has been fully removed. All user accounts, application records, and service definitions are stored in a local MySQL Workbench database.
 
 ---
 
@@ -86,14 +90,39 @@ flowchart TD
         E --> F[Vocalyze Speaks Question Aloud]
         F --> G[Microphone Listens for User's Spoken Answer]
         G --> H[Real-Time On-Screen Transcript Displayed]
-        H --> I[Assistant Asks: 'You said X. Correct? Say Yes or No']
-        I -- "User says 'Yes'" --> J[Save Answer to Firestore & Advance to Next Question]
+        H --> I["Assistant Asks: 'You said X. Correct? Say Yes or No'"]
+        I -- "User says 'Yes'" --> J[Save Answer to MySQL & Advance to Next Question]
         I -- "User says 'No'" --> F
     end
     
     J -- "All Questions Completed" --> K[Spoken Submission Confirmation]
     K -- "User says 'Submit' / 'Yes'" --> L[Application Submitted to Backend]
     L --> M[Audio Readout of Application ID & Confirmation]
+```
+
+### Database Architecture (MySQL)
+
+```
+users
+  ├── uid (UUID v4, PK)
+  ├── name, email, password_hash, password_salt
+  ├── preferred_language (en/hi/kn)
+  ├── accessibility_needs (JSON array)
+  └── interaction_preferences (JSON object)
+
+services
+  ├── service_id (slug, e.g. 'pension-certificate')
+  ├── name_en, name_hi, name_kn
+  ├── description_en, description_hi, description_kn
+  ├── category, enabled
+  └── questions (JSON array of question objects)
+
+applications
+  ├── application_id (e.g. APP-2026-82341)
+  ├── service_id → services.service_id
+  ├── user_uid → users.uid
+  ├── status (IN_PROGRESS / SUBMITTED / APPROVED / REJECTED)
+  └── answers (JSON map: { fieldKey: "value" })
 ```
 
 ---
@@ -103,91 +132,130 @@ flowchart TD
 ### Prerequisites
 - **Node.js**: v18.0.0 or higher
 - **npm**: v9.0.0 or higher
-- **Firebase Project**: Firestore Database enabled
+- **MySQL Server**: v8.0+ (via [MySQL Workbench](https://www.mysql.com/products/workbench/))
 - **Google Gemini API Key**: From [Google AI Studio](https://aistudio.google.com/)
 
 ---
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/v152005/codefury.git
-cd codefury
+git clone https://github.com/v152005/Vocalyze_db.git
+cd Vocalyze_db
 ```
 
 ---
 
-### 2. Backend Setup
-1. Install backend dependencies:
-   ```bash
-   npm install
-   ```
+## 🗄️ MySQL Database Setup
 
-2. Configure environment variables in `.env`:
-   ```env
-   PORT=5000
-   GEMINI_API_KEY=your_gemini_api_key_here
-   FIREBASE_PROJECT_ID=your_firebase_project_id
-   FIREBASE_CLIENT_EMAIL=your_firebase_service_account_email
-   FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-   ```
+### Step 1 — Install MySQL & MySQL Workbench
+1. Download and install **[MySQL Community Server 8.0+](https://dev.mysql.com/downloads/mysql/)**.
+2. Download and install **[MySQL Workbench](https://dev.mysql.com/downloads/workbench/)**.
+3. Open MySQL Workbench and connect to your local MySQL instance (default: `root@localhost:3306`).
 
-3. (Optional) Place your Firebase Service Account JSON as `firebase-authentication.json` in the root directory.
+### Step 2 — Run the Schema Script
+In MySQL Workbench:
+1. Open **File → Open SQL Script** and select `config/schema.sql` from this project.
+2. Click **Execute** (lightning bolt icon ⚡) to create the database, all tables, and seed the three default services.
 
-4. Start the backend server:
-   ```bash
-   npm run dev
-   # or node app.js
-   ```
-   *Backend will run on `http://localhost:5000`.*
+Alternatively run from the terminal:
+```bash
+mysql -u root -p < config/schema.sql
+```
+
+This creates:
+| Table | Purpose |
+|:---|:---|
+| `users` | User accounts with PBKDF2 password hashes and accessibility profile |
+| `services` | Government service definitions (Pension, Disability, Income) with multilingual labels stored as JSON |
+| `applications` | Application submissions with form answers stored as JSON |
+
+### Step 3 — Configure Environment Variables
+Create a `.env` file in the project root:
+```env
+# ---- MySQL (MySQL Workbench / Local Server) ----
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=your_mysql_root_password
+DB_NAME=dbms_project
+
+# ---- Server ----
+PORT=5000
+NODE_ENV=development
+
+# ---- JWT (use a strong random secret) ----
+JWT_SECRET=your_strong_jwt_secret_here
+
+# ---- Gemini AI ----
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+> ⚠️ **Never commit your `.env` file.** It is listed in `.gitignore`.
 
 ---
 
-### 3. Frontend Setup
-1. Navigate to the client directory and install dependencies:
-   ```bash
-   cd client
-   npm install
-   ```
+### 4. Backend Setup
+```bash
+# Install backend dependencies
+npm install
 
-2. Start the Vite development server:
-   ```bash
-   npm run dev
-   ```
-   *Frontend will run on `http://localhost:3000`.*
+# Start the development server (with hot reload)
+npm run dev
+```
+*Backend will run on `http://localhost:5000`.*
+
+---
+
+### 5. Frontend Setup
+```bash
+cd client
+npm install
+npm run dev
+```
+*Frontend will run on `http://localhost:3000`.*
+
+---
+
+### 6. Run Both Simultaneously
+```bash
+# From the root directory:
+npm run dev:all
+```
+This starts both the Express backend (port 5000) and the Vite frontend (port 3000) concurrently.
 
 ---
 
 ## 📡 API Documentation
 
 ### Authentication & Profile
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `POST` | `/api/users/signup` | Register a new user |
-| `POST` | `/api/users/login` | Login and receive authentication token |
-| `GET` | `/api/profile` | Retrieve user profile & accessibility preferences |
-| `POST` | `/api/profile` | Update preferred language, text size & interaction needs |
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/users/signup` | None | Register a new user (creates MySQL row, returns JWT) |
+| `POST` | `/api/users/login` | None | Login with email/password, returns JWT |
+| `GET` | `/api/profile` | Bearer JWT | Retrieve user profile & accessibility preferences |
+| `POST` | `/api/profile` | Bearer JWT | Update preferred language, text size & interaction needs |
 
 ### Government Services
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/api/services` | List all available public services |
-| `GET` | `/api/services/:id` | Get question schema for a specific service |
-| `POST` | `/api/services/seed` | Seed default services (Pension, Disability, Income) |
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/services` | Bearer JWT | List all available public services |
+| `GET` | `/api/services/:id` | Bearer JWT | Get question schema for a specific service |
+| `POST` | `/api/services/seed` | Bearer JWT | Seed default services (Pension, Disability, Income) |
 
 ### Applications
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `POST` | `/api/applications` | Initialize a new application draft |
-| `GET` | `/api/applications/:id` | Get application details and saved answers |
-| `PATCH` | `/api/applications/:id` | Update answers for specific question fields |
-| `POST` | `/api/applications/:id/submit` | Finalize and submit the application |
-| `GET` | `/api/applications/user/me` | List all applications filed by current user |
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/applications` | Bearer JWT | Initialize a new application draft |
+| `GET` | `/api/applications/:id` | Bearer JWT | Get application details and saved answers |
+| `PATCH` | `/api/applications/:id` | Bearer JWT | Update answers for specific question fields |
+| `POST` | `/api/applications/:id/submit` | Bearer JWT | Finalize and submit the application |
+| `GET` | `/api/applications/user/me` | Bearer JWT | List all applications filed by current user |
 
 ### AI NLP & OCR Parsing
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `POST` | `/api/ai/parse-response` | Extract structured values from spoken conversational voice |
-| `POST` | `/api/ai/parse-document` | Extract fields from OCR scanned image text |
+| Method | Endpoint | Auth | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/ai/parse-response` | Bearer JWT | Extract structured values from spoken conversational voice |
+| `POST` | `/api/ai/parse-document` | Bearer JWT | Extract fields from OCR scanned image text |
 
 ---
 
@@ -201,10 +269,13 @@ cd codefury
 | **Affirmative / Confirm** | *"Yes"*, *"Correct"*, *"Confirm"*, *"Haan"*, *"Haudu"*, *"Sari"*, *"हाँ"*, *"ಹೌದು"* |
 | **Negative / Retry** | *"No"*, *"Wrong"*, *"Change"*, *"Nahi"*, *"Illa"*, *"नहीं"*, *"ಇಲ್ಲ"* |
 | **Submit Form** | *"Submit"*, *"Yes submit"*, *"Apply now"*, *"सबमिट"*, *"ಸಲ್ಲಿಸಿ"* |
+| **View Applications** | *"My applications"*, *"Status"*, *"ಅರ್ಜಿಗಳು"*, *"आवेदन"* |
+| **Logout** | *"Logout"*, *"Sign out"*, *"Exit"*, *"ಲಾಗ್ ಔಟ್"* |
 
 ---
 
 ## 👥 Authors & Acknowledgments
 
 - **Team Vocalyze** — Built with ❤️ for inclusive, accessible, and barrier-free digital governance.
-- **GitHub Repository**: [v152005/codefury](https://github.com/v152005/codefury)
+- **GitHub Repository**: [v152005/Vocalyze_db](https://github.com/v152005/Vocalyze_db)
+- **Database**: MySQL 8.0 + MySQL Workbench (as required by course project guidelines)
