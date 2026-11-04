@@ -4,7 +4,10 @@ const authMiddleware = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
-// Apply authMiddleware globally to all AI endpoints
+// Classify user intent for speech navigation (open to all authenticated or onboarding sessions)
+router.post("/classify-intent", aiController.classifyIntent);
+
+// Apply authMiddleware globally to all form/doc endpoints
 router.use(authMiddleware);
 
 router.post("/explain", aiController.explain);

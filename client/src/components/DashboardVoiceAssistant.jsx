@@ -1,57 +1,143 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { speakText, cancelSpeech, getLocaleForLang, matchSpokenService, isSpeechRecognitionSupported } from "../utils/speechHelper";
+import {
+  speakText,
+  cancelSpeech,
+  getLocaleForLang,
+  matchSpokenService,
+  isConfirmationAffirmative,
+  isConfirmationNegative,
+  isLogoutCommand,
+  isApplicationsCommand,
+  isHelpCommand,
+  isSpeechRecognitionSupported
+} from "../utils/speechHelper";
+import { API_BASE_URL } from "../config";
 
-export default function DashboardVoiceAssistant({ user, services = [], lang = "en" }) {
+const STATIC_SERVICES = [
+  { id: "income-certificate", name: { en: "Income Certificate", kn: "ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ", hi: "आय प्रमाण पत्र" }, icon: "💰" },
+  { id: "pension-certificate", name: { en: "Pension Certificate", kn: "ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ", hi: "पेंशन प्रमाण पत्र" }, icon: "📜" },
+  { id: "disability-certificate", name: { en: "Disability Certificate", kn: "ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ", hi: "दिव्यांगता प्रमाण पत्र" }, icon: "♿" }
+];
+
+export default function DashboardVoiceAssistant({
+  user,
+  services = [],
+  applications = [],
+  logout,
+  lang = "en",
+  token
+}) {
   const navigate = useNavigate();
-  const [status, setStatus] = useState("idle"); // 'idle' | 'speaking' | 'listening' | 'processing' | 'navigating'
-  const [transcript, setTranscript] = useState("");
-  const [assistantMessage, setAssistantMessage] = useState("");
+
+  // Voice Assistant UI state - EXACT pattern of ServiceForm.jsx
+  const [voiceMode, setVoiceMode] = useState("idle"); // 'idle' | 'asking_greeting' | 'listening_choice' | 'asking_confirmation' | 'listening_confirmation' | 'navigating' | 'speaking'
+  const [assistantSpeech, setAssistantSpeech] = useState("");
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [userSaidText, setUserSaidText] = useState("");
+  const [pendingAnswer, setPendingAnswer] = useState(null);
   const [isMicActive, setIsMicActive] = useState(false);
-  const recognitionRef = useRef(null);
-  const isMountedRef = useRef(true);
 
   const userName = user?.name || "User";
 
-  // Multi-lingual spoken prompts
-  const voicePrompts = {
+  // Synchronous State Refs - EXACT pattern of ServiceForm.jsx
+  const isMountedRef = useRef(true);
+  const recognitionRef = useRef(null);
+  const restartTimerRef = useRef(null);
+  const silenceTimerRef = useRef(null);
+  const activeModeRef = useRef("idle");
+  const activeCallbackRef = useRef(null);
+
+  const pendingAnswerRef = useRef(null);
+  const servicesRef = useRef(services);
+  const applicationsRef = useRef(applications);
+  const tokenRef = useRef(token);
+  const langRef = useRef(lang);
+  const userNameRef = useRef(userName);
+  const logoutRef = useRef(logout);
+
+  // Sync state to refs
+  useEffect(() => {
+    servicesRef.current = services;
+  }, [services]);
+
+  useEffect(() => {
+    applicationsRef.current = applications;
+  }, [applications]);
+
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
+
+  useEffect(() => {
+    langRef.current = lang;
+  }, [lang]);
+
+  useEffect(() => {
+    userNameRef.current = userName;
+  }, [userName]);
+
+  useEffect(() => {
+    logoutRef.current = logout;
+  }, [logout]);
+
+  const translations = {
     en: {
-      greeting: `Hello ${userName}, welcome to Vocalyze. The services available on this portal are: Pension Certificate, Disability Certificate, and Income Certificate. Which service would you like to apply for? Please say the name of the service.`,
-      listening: "Listening for your choice... (e.g. 'Pension Certificate')",
-      directing: (name) => `You selected ${name}. Directing you to the application form now.`,
-      notUnderstood: "I couldn't match that service. Please say Pension Certificate, Disability Certificate, or Income Certificate.",
-      micBlocked: "Microphone permission is required. Please tap the microphone button to enable it.",
-      repeatBtn: "Hear Instructions Again",
-      startMic: "Start Speaking",
-      stopMic: "Stop Listening"
+      repeatOptions: "Repeat Options",
+      youSaid: "You said:",
+      detected: "Detected service:",
+      confirm: "Yes, Open",
+      tryAgain: "No, Choose Another",
+      sayYesNo: "Say 'Yes' to confirm or 'No' to re-enter."
     },
     hi: {
-      greeting: `नमस्ते ${userName}, Vocalyze में आपका स्वागत है। इस पोर्टल पर उपलब्ध सेवाएं हैं: पेंशन प्रमाण पत्र, दिव्यांगता प्रमाण पत्र, और आय प्रमाण पत्र। आप किस सेवा के लिए आवेदन करना चाहते हैं? कृपया सेवा का नाम बोलें।`,
-      listening: "आपकी आवाज़ सुनी जा रही है... (उदा. 'पेंशन प्रमाण पत्र')",
-      directing: (name) => `आपने ${name} चुना है। आपको आवेदन पत्र पर ले जाया जा रहा है।`,
-      notUnderstood: "मैं समझ नहीं पाया। कृपया पेंशन प्रमाण पत्र, दिव्यांगता प्रमाण पत्र, या आय प्रमाण पत्र बोलें।",
-      micBlocked: "माइक्रोफ़ोन की अनुमति आवश्यक है। कृपया माइक्रोफ़ोन बटन दबाएँ।",
-      repeatBtn: "निर्देश पुनः सुनें",
-      startMic: "बोलना शुरू करें",
-      stopMic: "सुनना बंद करें"
+      repeatOptions: "विकल्प दोबारा सुनें",
+      youSaid: "आपने कहा:",
+      detected: "पहचानी गई सेवा:",
+      confirm: "हाँ, खोलें",
+      tryAgain: "नहीं, दूसरी चुनें",
+      sayYesNo: "पुष्टि के लिए 'हाँ' कहें या दोबारा बोलने के लिए 'नहीं' कहें।"
     },
     kn: {
-      greeting: `ನಮಸ್ಕಾರ ${userName}, Vocalyze ಗೆ ಸುಸ್ವಾಗತ. ಈ ಪೋರ್ಟಲ್‌ನಲ್ಲಿ ಲಭ್ಯವಿರುವ ಸೇವೆಗಳು: ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ, ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ, ಮತ್ತು ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ. ನೀವು ಯಾವ ಸೇವೆಗೆ ಅರ್ಜಿ ಸಲ್ಲಿಸಲು ಬಯಸುತ್ತೀರಿ? ದಯವಿಟ್ಟು ಸೇವೆಯ ಹೆಸರನ್ನು ಹೇಳಿ.`,
-      listening: "ನಿಮ್ಮ ಧ್ವನಿಯನ್ನು ಆಲಿಸಲಾಗುತ್ತಿದೆ... (ಉದಾ. 'ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ')",
-      directing: (name) => `ನೀವು ${name} ಆಯ್ಕೆ ಮಾಡಿದ್ದೀರಿ. ನಿಮ್ಮನ್ನು ಅರ್ಜಿ ನಮೂನೆಗೆ ಕರೆದೊಯ್ಯಲಾಗುತ್ತಿದೆ.`,
-      notUnderstood: "ಸೇವೆ ಗುರುತಿಸಲಾಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ, ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ ಅಥವಾ ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ ಎಂದು ಹೇಳಿ.",
-      micBlocked: "ಮೈಕ್ರೊಫೋನ್ ಅನುಮತಿ ಅಗತ್ಯವಿದೆ. ದಯವಿಟ್ಟು ಮೈಕ್ ಬಟನ್ ಒತ್ತಿ.",
-      repeatBtn: "ಸೂಚನೆಗಳನ್ನು ಮತ್ತೆ ಕೇಳಿ",
-      startMic: "ಮಾತನಾಡಲು ಪ್ರಾರಂಭಿಸಿ",
-      stopMic: "ಆಲಿಸುವುದನ್ನು ನಿಲ್ಲಿಸಿ"
+      repeatOptions: "ಆಯ್ಕೆಗಳನ್ನು ಮತ್ತೆ ಕೇಳಿ",
+      youSaid: "ನೀವು ಹೇಳಿದ್ದು:",
+      detected: "ಗುರುತಿಸಲಾದ ಸೇವೆ:",
+      confirm: "ಹೌದು, ತೆರೆಯಿರಿ",
+      tryAgain: "ಇಲ್ಲ, ಬೇರೆ ಆಯ್ಕೆಮಾಡಿ",
+      sayYesNo: "ದೃಢೀಕರಿಸಲು 'ಹೌದು' ಅಥವಾ ಮತ್ತೊಮ್ಮೆ ಹೇಳಲು 'ಇಲ್ಲ' ಎಂದು ಹೇಳಿ."
     }
   };
 
-  const t = voicePrompts[lang] || voicePrompts.en;
+  const t = translations[lang] || translations.en;
 
-  // Initialize Speech Recognition
-  const startListening = useCallback(() => {
+  // Complete recognition shutdown - EXACT pattern of ServiceForm.jsx
+  const stopListening = useCallback(() => {
+    activeModeRef.current = "idle";
+    activeCallbackRef.current = null;
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (e) {}
+    }
+    setIsMicActive(false);
+  }, []);
+
+  // Robust Speech Recognition Controller with Auto Keep-Alive - EXACT pattern of ServiceForm.jsx
+  const startRecognition = useCallback((modeToSet, onResultCallback) => {
     if (!isSpeechRecognitionSupported()) return;
+
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
 
     if (recognitionRef.current) {
       try {
@@ -59,53 +145,126 @@ export default function DashboardVoiceAssistant({ user, services = [], lang = "e
       } catch (e) {}
     }
 
+    activeModeRef.current = modeToSet;
+    activeCallbackRef.current = onResultCallback;
+    setVoiceMode(modeToSet);
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     const rec = new SpeechRecognition();
-    rec.continuous = false;
+    rec.continuous = true;
     rec.interimResults = true;
-    rec.lang = getLocaleForLang(lang);
+    rec.lang = getLocaleForLang(langRef.current);
 
     rec.onstart = () => {
       if (!isMountedRef.current) return;
-      setStatus("listening");
       setIsMicActive(true);
-      setTranscript("");
     };
 
     rec.onerror = (e) => {
       if (!isMountedRef.current) return;
-      console.warn("Recognition error:", e.error);
-      setIsMicActive(false);
-      if (e.error === "no-speech") {
-        setStatus("idle");
+      console.warn("[DashboardVoice] Recognition notice:", e.error);
+      // If error occurs and we are still in listening mode, auto-retry
+      if (activeModeRef.current === modeToSet) {
+        restartTimerRef.current = setTimeout(() => {
+          if (activeModeRef.current === modeToSet && isMountedRef.current) {
+            try {
+              rec.start();
+            } catch (err) {}
+          }
+        }, 300);
       }
     };
 
     rec.onend = () => {
       if (!isMountedRef.current) return;
       setIsMicActive(false);
+      // If recognition stopped unexpectedly while waiting for user speech, auto restart!
+      if (activeModeRef.current === modeToSet) {
+        restartTimerRef.current = setTimeout(() => {
+          if (activeModeRef.current === modeToSet && isMountedRef.current) {
+            try {
+              rec.start();
+            } catch (err) {}
+          }
+        }, 300);
+      }
     };
 
     rec.onresult = (event) => {
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || activeModeRef.current !== modeToSet) return;
+
       let finalStr = "";
       let interimStr = "";
 
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
+      for (let i = 0; i < event.results.length; ++i) {
+        const text = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalStr += event.results[i][0].transcript;
+          finalStr += text + " ";
         } else {
-          interimStr += event.results[i][0].transcript;
+          interimStr += text;
         }
       }
 
-      if (interimStr) {
-        setTranscript(interimStr);
+      const activeText = (finalStr + interimStr).replace(/\s+/g, " ").trim();
+      if (activeText) {
+        setLiveTranscript(activeText);
+        setUserSaidText(activeText);
       }
 
-      if (finalStr) {
-        setTranscript(finalStr);
-        handleVoiceSelection(finalStr);
+      // Clear any pending silence timer on new speech input
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+
+      if (activeText.length > 0) {
+        const isConfirmMode = modeToSet.includes("confirmation");
+        
+        let debounceDelay = 1200; // Default for spoken choices
+        if (isConfirmMode) {
+          // If unambiguous affirmative or negative detected, trigger ultra-fast
+          if (isConfirmationAffirmative(activeText) || isConfirmationNegative(activeText)) {
+            debounceDelay = 100;
+          } else {
+            debounceDelay = 400;
+          }
+        } else {
+          // Fast path for immediate service keywords
+          const lower = activeText.toLowerCase();
+          if (
+            lower.includes("income") ||
+            lower.includes("pension") ||
+            lower.includes("disability") ||
+            lower.includes("logout") ||
+            lower.includes("status") ||
+            activeText.includes("ಆದಾಯ") ||
+            activeText.includes("ಪಿಂಚಣಿ") ||
+            activeText.includes("ವಿಕಲಾಂಗ") ||
+            activeText.includes("आय") ||
+            activeText.includes("पेंशन") ||
+            activeText.includes("दिव्यांग")
+          ) {
+            debounceDelay = 350;
+          }
+        }
+
+        silenceTimerRef.current = setTimeout(() => {
+          if (!isMountedRef.current || activeModeRef.current !== modeToSet) return;
+
+          activeModeRef.current = "processing";
+          const callbackToRun = activeCallbackRef.current;
+          activeCallbackRef.current = null;
+
+          try {
+            rec.abort();
+          } catch (e) {}
+
+          setIsMicActive(false);
+
+          if (callbackToRun) {
+            callbackToRun(activeText);
+          }
+        }, debounceDelay);
       }
     };
 
@@ -113,253 +272,473 @@ export default function DashboardVoiceAssistant({ user, services = [], lang = "e
     try {
       rec.start();
     } catch (err) {
-      console.error("Failed to start speech recognition:", err);
+      console.error("[DashboardVoice] Failed to start speech recognition:", err);
     }
-  }, [lang, services]);
+  }, []);
 
-  // Handle service matching
-  const handleVoiceSelection = useCallback((spokenText) => {
-    setStatus("processing");
-    const matched = matchSpokenService(spokenText, services);
+  // Forward declarations
+  const askGreetingRef = useRef();
+  const askForConfirmationRef = useRef();
+  const handleConfirmationResponseRef = useRef();
+  const handleChoiceSpokenRef = useRef();
 
-    if (matched) {
-      const sName = matched.name && typeof matched.name === "object"
-        ? (matched.name[lang] || matched.name.en)
-        : (matched.name || "Selected Service");
+  // Ask User for Audio Confirmation ("You said X, is this correct?") - EXACT pattern of ServiceForm.jsx
+  const askForConfirmation = useCallback((serviceObj, spokenText) => {
+    cancelSpeech();
+    stopListening();
 
-      const msg = t.directing(sName);
-      setAssistantMessage(msg);
-      setStatus("navigating");
+    setPendingAnswer(serviceObj);
+    pendingAnswerRef.current = serviceObj;
+    setUserSaidText(spokenText);
 
-      speakText(msg, lang, () => {
-        navigate(`/service/${matched.id}`);
+    const curLang = langRef.current;
+    const sName = serviceObj.name && typeof serviceObj.name === "object"
+      ? (serviceObj.name[curLang] || serviceObj.name.en)
+      : (serviceObj.name || "Selected Service");
+
+    const confirmPhrases = {
+      en: `You chose: ${sName}. Would you like to open this application form? Say 'Yes' or 'No'.`,
+      hi: `आपने चुना: ${sName}। क्या आप यह आवेदन फॉर्म खोलना चाहते हैं? 'हाँ' या 'नहीं' कहें।`,
+      kn: `ನೀವು ಆರಿಸಿದ್ದು: ${sName}. ಈ ಅರ್ಜಿ ನಮೂನೆಯನ್ನು ತೆರೆಯಲು ಬಯಸುವಿರಾ? 'ಹೌದು' ಅಥವಾ 'ಇಲ್ಲ' ಎಂದು ಹೇಳಿ.`
+    };
+
+    const confirmMsg = confirmPhrases[curLang] || confirmPhrases.en;
+    setAssistantSpeech(confirmMsg);
+    setVoiceMode("asking_confirmation");
+
+    speakText(confirmMsg, curLang, () => {
+      if (!isMountedRef.current) return;
+      startRecognition("listening_confirmation", (response) => {
+        handleConfirmationResponseRef.current(response, serviceObj);
+      });
+    });
+  }, [stopListening, startRecognition]);
+
+  askForConfirmationRef.current = askForConfirmation;
+
+  // Handle Confirmation Voice Input ('Yes' / 'No' / Direct Correction) - EXACT pattern of ServiceForm.jsx
+  const handleConfirmationResponse = useCallback((response, serviceObj) => {
+    const curLang = langRef.current;
+    setLiveTranscript(response);
+
+    if (isConfirmationAffirmative(response)) {
+      // User said YES -> Navigate to the application form
+      const target = serviceObj || pendingAnswerRef.current;
+      if (target) {
+        const sName = target.name && typeof target.name === "object"
+          ? (target.name[curLang] || target.name.en)
+          : (target.name || "Selected Service");
+
+        const navMsg = curLang === "kn"
+          ? `${sName} ಅರ್ಜಿ ನಮೂನೆಯನ್ನು ಈಗ ತೆರೆಯಲಾಗುತ್ತಿದೆ.`
+          : (curLang === "hi"
+            ? `${sName} का आवेदन फॉर्म खोला जा रहा है।`
+            : `Opening the ${sName} application form now.`);
+
+        setAssistantSpeech(navMsg);
+        setVoiceMode("navigating");
+
+        let navigated = false;
+        const doNavigate = () => {
+          if (!navigated) {
+            navigated = true;
+            navigate(`/service/${target.id}`);
+          }
+        };
+
+        speakText(navMsg, curLang, doNavigate);
+        setTimeout(doNavigate, 1600);
+      }
+    } else if (isConfirmationNegative(response)) {
+      // User said NO -> Re-ask greeting
+      setPendingAnswer(null);
+      pendingAnswerRef.current = null;
+      setUserSaidText("");
+      setLiveTranscript("");
+
+      const retryPhrases = {
+        en: "Okay, which service would you like to apply for?",
+        hi: "ठीक है, आप किस सेवा के लिए आवेदन करना चाहते हैं?",
+        kn: "ಸರಿ, ನೀವು ಯಾವ ಸೇವೆಗೆ ಅರ್ಜಿ ಸಲ್ಲಿಸಲು ಬಯಸುತ್ತೀರಿ?"
+      };
+      const retryMsg = retryPhrases[curLang] || retryPhrases.en;
+      setAssistantSpeech(retryMsg);
+      setVoiceMode("asking_greeting");
+
+      speakText(retryMsg, curLang, () => {
+        if (!isMountedRef.current) return;
+        startRecognition("listening_choice", (text) => {
+          handleChoiceSpokenRef.current(text);
+        });
       });
     } else {
-      const retryMsg = t.notUnderstood;
-      setAssistantMessage(retryMsg);
-      speakText(retryMsg, lang, () => {
-        startListening();
-      });
+      // User uttered another service choice directly
+      handleChoiceSpokenRef.current(response);
     }
-  }, [services, lang, navigate, t, startListening]);
+  }, [navigate, startRecognition]);
 
-  // Speak greeting on mount
-  const runGreeting = useCallback(() => {
+  handleConfirmationResponseRef.current = handleConfirmationResponse;
+
+  // Handle Initial Choice Spoken by User
+  const handleChoiceSpoken = useCallback(async (transcript) => {
+    if (!transcript || !transcript.trim()) {
+      startRecognition("listening_choice", (t) => {
+        handleChoiceSpokenRef.current(t);
+      });
+      return;
+    }
+
+    stopListening();
     cancelSpeech();
-    setStatus("speaking");
-    setAssistantMessage(t.greeting);
 
-    speakText(t.greeting, lang, () => {
+    const curLang = langRef.current;
+    const allServices = (servicesRef.current && servicesRef.current.length > 0)
+      ? servicesRef.current
+      : STATIC_SERVICES;
+
+    // 1. Direct Voice Command: Logout
+    if (isLogoutCommand(transcript)) {
+      const exitMsg = curLang === "kn"
+        ? "ನಿಮ್ಮನ್ನು ಲಾಗ್ ಔಟ್ ಮಾಡಲಾಗುತ್ತಿದೆ. ಧನ್ಯವಾದಗಳು."
+        : (curLang === "hi" ? "आपको लॉग आउट किया जा रहा है। अलविदा।" : "Logging you out. Goodbye.");
+
+      setAssistantSpeech(exitMsg);
+      setVoiceMode("speaking");
+      speakText(exitMsg, curLang, () => {
+        if (logoutRef.current) logoutRef.current();
+        navigate("/login");
+      });
+      setTimeout(() => {
+        if (logoutRef.current) logoutRef.current();
+        navigate("/login");
+      }, 1500);
+      return;
+    }
+
+    // 2. Direct Voice Command: Check Applications / Status
+    if (isApplicationsCommand(transcript)) {
+      const apps = applicationsRef.current || [];
+      const appMsg = apps.length === 0
+        ? (curLang === "kn" ? "ನೀವು ಯಾವುದೇ ಅರ್ಜಿಗಳನ್ನು ಸಲ್ಲಿಸಿಲ್ಲ." : (curLang === "hi" ? "कोई आवेदन नहीं मिला।" : "You currently have no submitted applications."))
+        : (curLang === "kn" ? `ನಿಮ್ಮ ಬಳಿ ${apps.length} ಅರ್ಜಿಗಳು ದಾಖಲಾಗಿವೆ.` : (curLang === "hi" ? `आपके पास ${apps.length} आवेदन हैं।` : `You have ${apps.length} submitted applications.`));
+
+      setAssistantSpeech(appMsg);
+      setVoiceMode("speaking");
+      speakText(appMsg, curLang, () => {
+        if (!isMountedRef.current) return;
+        askGreetingRef.current();
+      });
+      return;
+    }
+
+    // 3. Direct Voice Command: Help / Repeat
+    if (isHelpCommand(transcript)) {
+      const helpMsg = curLang === "kn"
+        ? "ನೀವು ಹೇಳಬಹುದು: ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ, ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ, ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ, ನನ್ನ ಅರ್ಜಿಗಳು, ಅಥವಾ ಲಾಗ್ ಔಟ್."
+        : (curLang === "hi"
+          ? "आप बोल सकते हैं: आय प्रमाण पत्र, पेंशन प्रमाण पत्र, दिव्यांगता प्रमाण पत्र, मेरे आवेदन, या लॉग आउट।"
+          : "You can say: Income Certificate, Pension Certificate, Disability Certificate, Check Applications, or Log out.");
+
+      setAssistantSpeech(helpMsg);
+      setVoiceMode("speaking");
+      speakText(helpMsg, curLang, () => {
+        if (!isMountedRef.current) return;
+        askGreetingRef.current();
+      });
+      return;
+    }
+
+    // 4. Immediate Local Match
+    const localMatch = matchSpokenService(transcript, allServices);
+    if (localMatch) {
+      askForConfirmationRef.current(localMatch, transcript);
+      return;
+    }
+
+    // 5. Gemini AI Natural Language Comprehension
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/ai/classify-intent`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(tokenRef.current ? { Authorization: `Bearer ${tokenRef.current}` } : {})
+        },
+        body: JSON.stringify({
+          transcript,
+          language: curLang,
+          services: allServices.map(s => ({ id: s.id, name: s.name, description: s.description }))
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.matchedServiceId) {
+          const s = allServices.find(x => x.id === data.matchedServiceId) || { id: data.matchedServiceId, name: data.matchedServiceId };
+          askForConfirmationRef.current(s, transcript);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn("[DashboardVoice] Gemini intent notice:", e);
+    }
+
+    // 6. Unrecognized -> Clarify and re-listen
+    const notUnderstood = curLang === "kn"
+      ? "ಸೇವೆ ಗುರುತಿಸಲಾಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ, ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ ಅಥವಾ ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ ಎಂದು ಹೇಳಿ."
+      : (curLang === "hi"
+        ? "मैं समझ नहीं पाया। कृपया आय प्रमाण पत्र, पेंशन प्रमाण पत्र, या दिव्यांगता प्रमाण पत्र बोलें।"
+        : "I couldn't identify that service. Please say Income Certificate, Pension Certificate, or Disability Certificate.");
+
+    setAssistantSpeech(notUnderstood);
+    setVoiceMode("speaking");
+
+    speakText(notUnderstood, curLang, () => {
       if (!isMountedRef.current) return;
-      startListening();
+      startRecognition("listening_choice", (t) => {
+        handleChoiceSpokenRef.current(t);
+      });
     });
-  }, [t.greeting, lang, startListening]);
+  }, [navigate, stopListening, startRecognition]);
 
+  handleChoiceSpokenRef.current = handleChoiceSpoken;
+
+  // Ask Greeting via Audio - EXACT pattern of askCurrentQuestion in ServiceForm.jsx
+  const askGreeting = useCallback(() => {
+    cancelSpeech();
+    stopListening();
+
+    const curLang = langRef.current;
+    const uName = userNameRef.current || "User";
+    const greetings = {
+      en: `Hello ${uName}, welcome to Vocalyze. Which service would you like to apply for? You can say Income Certificate, Pension Certificate, or Disability Certificate.`,
+      hi: `नमस्ते ${uName}, Vocalyze में आपका स्वागत है। आप किस सेवा के लिए आवेदन करना चाहते हैं? आप बोल सकते हैं आय प्रमाण पत्र, पेंशन प्रमाण पत्र, या दिव्यांगता प्रमाण पत्र।`,
+      kn: `ನಮಸ್ಕಾರ ${uName}, Vocalyze ಗೆ ಸುಸ್ವಾಗತ. ನೀವು ಯಾವ ಸೇವೆಗೆ ಅರ್ಜಿ ಸಲ್ಲಿಸಲು ಬಯಸುತ್ತೀರಿ? ನೀವು ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ, ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ, ಅಥವಾ ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ ಎಂದು ಹೇಳಬಹುದು.`
+    };
+
+    const greetingText = greetings[curLang] || greetings.en;
+    setAssistantSpeech(greetingText);
+    setVoiceMode("asking_greeting");
+    setPendingAnswer(null);
+    pendingAnswerRef.current = null;
+    setUserSaidText("");
+    setLiveTranscript("");
+
+    speakText(greetingText, curLang, () => {
+      if (!isMountedRef.current) return;
+      startRecognition("listening_choice", (transcript) => {
+        handleChoiceSpokenRef.current(transcript);
+      });
+    });
+  }, [stopListening, startRecognition]);
+
+  askGreetingRef.current = askGreeting;
+
+  // Start voice assistant on initial dashboard load - EXACT pattern of ServiceForm.jsx
   useEffect(() => {
     isMountedRef.current = true;
-
-    // Small delay to allow page render
     const timer = setTimeout(() => {
-      runGreeting();
-    }, 600);
+      if (askGreetingRef.current) {
+        askGreetingRef.current();
+      }
+    }, 500);
 
     return () => {
       isMountedRef.current = false;
       clearTimeout(timer);
       cancelSpeech();
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.abort();
-        } catch (e) {}
-      }
+      stopListening();
     };
-  }, [runGreeting]);
-
-  const toggleMic = () => {
-    if (isMicActive) {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
-      setIsMicActive(false);
-      setStatus("idle");
-    } else {
-      cancelSpeech();
-      startListening();
-    }
-  };
+  }, [stopListening]);
 
   return (
     <div
       style={{
-        background: "linear-gradient(135deg, rgba(18, 49, 47, 0.95), rgba(10, 36, 35, 0.95))",
-        backdropFilter: "blur(20px)",
-        border: "2px solid #d9f560",
-        borderRadius: "24px",
-        padding: "24px 30px",
-        marginBottom: "40px",
-        boxShadow: "0 16px 36px rgba(0, 0, 0, 0.4), 0 0 25px rgba(217, 245, 96, 0.12)",
-        display: "flex",
-        flexDirection: "column",
-        gap: "18px",
-        position: "relative",
-        overflow: "hidden"
+        background: "linear-gradient(135deg, rgba(217, 245, 96, 0.08), rgba(0,0,0,0.35))",
+        border: isMicActive ? "2px solid #ff4b4b" : "1px solid rgba(217, 245, 96, 0.3)",
+        borderRadius: "20px",
+        padding: "22px",
+        marginBottom: "25px",
+        boxShadow: isMicActive ? "0 0 25px rgba(255, 75, 75, 0.25)" : "none",
+        transition: "all 0.3s ease"
       }}
       role="region"
       aria-label="Vocalyze Voice Assistant for Dashboard"
     >
-      {/* Decorative Glow */}
-      <div
-        style={{
-          position: "absolute",
-          top: "-50px",
-          right: "-50px",
-          width: "150px",
-          height: "150px",
-          borderRadius: "50%",
-          background: "radial-gradient(circle, rgba(217, 245, 96, 0.2) 0%, transparent 70%)",
-          pointerEvents: "none"
-        }}
-      />
-
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "16px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", flexWrap: "wrap", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
           <div
             style={{
-              width: "48px",
-              height: "48px",
+              width: "32px",
+              height: "32px",
               borderRadius: "50%",
-              background: "#fff",
+              background: isMicActive ? "#ff4b4b" : "#d9f560",
+              color: "#12312f",
               display: "grid",
               placeItems: "center",
-              overflow: "hidden",
-              boxShadow: "0 0 20px rgba(217, 245, 96, 0.4)",
-              border: "2px solid #d9f560",
-              flexShrink: 0
+              fontSize: "15px",
+              fontWeight: "900",
+              boxShadow: isMicActive ? "0 0 12px #ff4b4b" : "0 0 10px rgba(217,245,96,0.3)"
             }}
           >
-            <img src="/vocalyze-logo.png" alt="Vocalyze Logo" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            🎙️
           </div>
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <h2 style={{ margin: 0, fontSize: "18px", fontWeight: "800", color: "#fff" }}>
-                Vocalyze Voice Assistant
-              </h2>
-              <span
-                style={{
-                  background: status === "listening" ? "rgba(255, 75, 75, 0.2)" : "rgba(217, 245, 96, 0.15)",
-                  color: status === "listening" ? "#ff7b7b" : "#d9f560",
-                  padding: "4px 10px",
-                  borderRadius: "12px",
-                  fontSize: "12px",
-                  fontWeight: "800",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px"
-                }}
-              >
-                <span
-                  style={{
-                    width: "8px",
-                    height: "8px",
-                    borderRadius: "50%",
-                    background: status === "listening" ? "#ff4b4b" : "#d9f560",
-                    animation: "pulse 1.5s infinite"
-                  }}
-                />
-                {status === "speaking" && "Speaking..."}
-                {status === "listening" && "Listening..."}
-                {status === "processing" && "Processing..."}
-                {status === "navigating" && "Opening Service..."}
-                {status === "idle" && "Ready"}
-              </span>
+          <span style={{ fontSize: "12px", fontWeight: "800", color: isMicActive ? "#ff7b7b" : "#d9f560", textTransform: "uppercase" }}>
+            {isMicActive
+              ? (voiceMode.includes("confirmation") ? "Listening for Confirmation ('Yes' / 'No')..." : "Listening for your Choice...")
+              : (voiceMode.startsWith("asking") ? "Speaking to you..." : (voiceMode === "navigating" ? "Opening form..." : "AI Assistant Ready"))}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={askGreeting}
+          style={{
+            background: "rgba(255,255,255,0.06)",
+            border: "1px solid rgba(255,255,255,0.15)",
+            color: "#d9f560",
+            borderRadius: "10px",
+            padding: "6px 12px",
+            fontSize: "12px",
+            fontWeight: "700",
+            cursor: "pointer"
+          }}
+        >
+          🔊 {t.repeatOptions}
+        </button>
+      </div>
+
+      {/* Assistant Voice Line */}
+      <div style={{ fontSize: "15px", color: "#fff", lineHeight: "1.5", marginBottom: "12px" }}>
+        🗣️ <strong style={{ color: "#d9f560" }}>Vocalyze:</strong> {assistantSpeech}
+      </div>
+
+      {/* Persistent "You said" and Detected Answer display - EXACT pattern of ServiceForm.jsx */}
+      {(userSaidText || liveTranscript) && (
+        <div
+          style={{
+            background: "rgba(0,0,0,0.3)",
+            border: "1px solid rgba(217, 245, 96, 0.2)",
+            borderRadius: "14px",
+            padding: "12px 16px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "6px"
+          }}
+        >
+          <div style={{ fontSize: "14px", color: "#d9f560", fontWeight: "700" }}>
+            🎙️ {t.youSaid} <span style={{ color: "#fff" }}>"{userSaidText || liveTranscript}"</span>
+          </div>
+          {pendingAnswer && (
+            <div style={{ fontSize: "12px", color: "#aab7b3" }}>
+              ✓ {t.detected}{" "}
+              <strong style={{ color: "#d9f560" }}>
+                {typeof pendingAnswer.name === "object"
+                  ? (pendingAnswer.name[lang] || pendingAnswer.name.en)
+                  : pendingAnswer.name}
+              </strong>
             </div>
-            <p style={{ margin: "4px 0 0 0", fontSize: "13px", color: "#aab7b3" }}>
-              Voice navigation enabled for hands-free and screen-free operation.
-            </p>
+          )}
+        </div>
+      )}
+
+      {/* Audio Confirmation Prompt - EXACT pattern of ServiceForm.jsx */}
+      {voiceMode.includes("confirmation") && pendingAnswer && (
+        <div
+          style={{
+            marginTop: "16px",
+            padding: "16px 20px",
+            background: "rgba(217, 245, 96, 0.08)",
+            border: "1px dashed #d9f560",
+            borderRadius: "16px"
+          }}
+        >
+          <div style={{ fontSize: "14px", fontWeight: "700", color: "#d9f560", marginBottom: "8px" }}>
+            🔊 Voice Confirmation
+          </div>
+          <div style={{ fontSize: "13px", color: "#fff", marginBottom: "14px" }}>
+            {t.sayYesNo}
+          </div>
+          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingAnswer(null);
+                pendingAnswerRef.current = null;
+                setUserSaidText("");
+                setLiveTranscript("");
+                askGreeting();
+              }}
+              style={{
+                flex: 1,
+                background: "rgba(255,75,75,0.15)",
+                border: "1px solid rgba(255,75,75,0.4)",
+                color: "#ff8b8b",
+                borderRadius: "12px",
+                padding: "10px 16px",
+                fontWeight: "800",
+                fontSize: "13px",
+                cursor: "pointer"
+              }}
+            >
+              ✗ {t.tryAgain}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleConfirmationResponse("yes", pendingAnswer)}
+              style={{
+                flex: 2,
+                background: "#d9f560",
+                border: "none",
+                color: "#12312f",
+                borderRadius: "12px",
+                padding: "10px 16px",
+                fontWeight: "800",
+                fontSize: "13px",
+                cursor: "pointer"
+              }}
+            >
+              ✓ {t.confirm}
+            </button>
           </div>
         </div>
+      )}
 
-        {/* Action Controls */}
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <button
-            onClick={runGreeting}
-            type="button"
-            style={{
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.15)",
-              borderRadius: "14px",
-              padding: "10px 18px",
-              color: "#fff",
-              fontSize: "13px",
-              fontWeight: "700",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              transition: "all 0.2s"
-            }}
-          >
-            🔊 {t.repeatBtn}
-          </button>
-
-          <button
-            onClick={toggleMic}
-            type="button"
-            style={{
-              background: isMicActive ? "#ff4b4b" : "#d9f560",
-              border: "none",
-              borderRadius: "14px",
-              padding: "10px 20px",
-              color: isMicActive ? "#fff" : "#12312f",
-              fontSize: "13px",
-              fontWeight: "800",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              boxShadow: isMicActive ? "0 0 20px rgba(255, 75, 75, 0.4)" : "0 0 16px rgba(217, 245, 96, 0.3)",
-              transition: "all 0.2s"
-            }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" />
-            </svg>
-            {isMicActive ? t.stopMic : t.startMic}
-          </button>
-        </div>
+      {/* Quick Action / Voice Command Guide */}
+      <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap", marginTop: "14px" }}>
+        <span style={{ fontSize: "11px", color: "#8ca19c", fontWeight: "700", textTransform: "uppercase" }}>Commands:</span>
+        {STATIC_SERVICES.map((s) => {
+          const title = s.name[lang] || s.name.en;
+          return (
+            <span
+              key={s.id}
+              style={{
+                background: "rgba(255, 255, 255, 0.04)",
+                border: "1px solid rgba(217, 245, 96, 0.2)",
+                color: "#d9f560",
+                padding: "3px 10px",
+                borderRadius: "12px",
+                fontSize: "11px",
+                fontWeight: "700"
+              }}
+            >
+              {s.icon} "{title}"
+            </span>
+          );
+        })}
+        <span
+          style={{
+            background: "rgba(255, 255, 255, 0.04)",
+            border: "1px solid rgba(255, 255, 255, 0.12)",
+            color: "#aab7b3",
+            padding: "3px 10px",
+            borderRadius: "12px",
+            fontSize: "11px",
+            fontWeight: "700"
+          }}
+        >
+          "Log out"
+        </span>
       </div>
-
-      {/* Spoken Text Feedback Card */}
-      <div
-        style={{
-          background: "rgba(0,0,0,0.25)",
-          borderRadius: "16px",
-          padding: "16px 20px",
-          border: "1px solid rgba(255,255,255,0.06)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "8px"
-        }}
-      >
-        <div style={{ fontSize: "14px", color: "#f6f3eb", lineHeight: "1.5" }}>
-          🗣️ <strong style={{ color: "#d9f560" }}>Vocalyze:</strong> {assistantMessage || t.greeting}
-        </div>
-
-        {transcript && (
-          <div style={{ fontSize: "14px", color: "#aab7b3", fontStyle: "italic", borderTop: "1px dashed rgba(255,255,255,0.1)", paddingTop: "8px" }}>
-            🎙️ <strong>You:</strong> "{transcript}"
-          </div>
-        )}
-      </div>
-
-      <style>{`
-        @keyframes pulse {
-          0% { transform: scale(0.95); opacity: 0.8; }
-          50% { transform: scale(1.15); opacity: 1; }
-          100% { transform: scale(0.95); opacity: 0.8; }
-        }
-      `}</style>
     </div>
   );
 }

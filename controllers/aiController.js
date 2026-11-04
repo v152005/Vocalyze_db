@@ -54,8 +54,27 @@ const parseDocument = async (req, res) => {
   }
 };
 
+/**
+ * Handles classifying user voice instructions using Gemini AI.
+ */
+const classifyIntent = async (req, res) => {
+  try {
+    const { transcript, language = "en", services = [] } = req.body;
+    if (!transcript) {
+      return res.status(400).json({ error: "transcript is required." });
+    }
+
+    const parsedData = await geminiService.classifyServiceIntent(transcript, language, services);
+    return res.status(200).json(parsedData);
+  } catch (error) {
+    console.error("AI Classify Intent Controller Error:", error);
+    return res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = {
   explain,
   parse,
   parseDocument,
+  classifyIntent,
 };

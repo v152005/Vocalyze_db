@@ -1,5 +1,19 @@
 // Speech Synthesis and Recognition Helper Utility
 
+// Pre-warm SpeechSynthesis voices
+if (typeof window !== "undefined" && "speechSynthesis" in window) {
+  try {
+    window.speechSynthesis.getVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = () => {
+        try {
+          window.speechSynthesis.getVoices();
+        } catch (e) {}
+      };
+    }
+  } catch (e) {}
+}
+
 export const getLocaleForLang = (lang = "en") => {
   const map = {
     en: "en-IN",
@@ -14,31 +28,46 @@ export const getLocaleForLang = (lang = "en") => {
  */
 export const speakText = (text, lang = "en", onEnd = null) => {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-    if (onEnd) setTimeout(onEnd, 300);
+    if (onEnd) setTimeout(onEnd, 200);
     return null;
   }
 
-  window.speechSynthesis.cancel();
+  // Cancel prior speech cleanly
+  try {
+    window.speechSynthesis.cancel();
+  } catch (e) {}
+
+  if (!text || !text.trim()) {
+    if (onEnd) setTimeout(onEnd, 50);
+    return null;
+  }
 
   const utterance = new SpeechSynthesisUtterance(text);
   const locale = getLocaleForLang(lang);
   utterance.lang = locale;
-  utterance.rate = 1.1; // Fast and clear conversational pace
+  utterance.rate = 1.05; // Natural conversational pace
   utterance.pitch = 1.0;
 
   // Try to find a voice matching the language/country
-  const voices = window.speechSynthesis.getVoices();
-  const matchedVoice = voices.find(
-    (v) => v.lang === locale || v.lang.startsWith(locale.substring(0, 2))
-  );
-  if (matchedVoice) {
-    utterance.voice = matchedVoice;
-  }
+  try {
+    const voices = window.speechSynthesis.getVoices();
+    const matchedVoice = voices.find(
+      (v) => v.lang === locale || v.lang.replace('_', '-').startsWith(locale.substring(0, 2))
+    );
+    if (matchedVoice) {
+      utterance.voice = matchedVoice;
+    }
+  } catch (e) {}
 
   let hasEnded = false;
+  let watchdogTimer = null;
+  let resumeInterval = null;
+
   const finish = () => {
     if (!hasEnded) {
       hasEnded = true;
+      if (watchdogTimer) clearTimeout(watchdogTimer);
+      if (resumeInterval) clearInterval(resumeInterval);
       if (onEnd) onEnd();
     }
   };
@@ -49,13 +78,54 @@ export const speakText = (text, lang = "en", onEnd = null) => {
     finish();
   };
 
-  window.speechSynthesis.speak(utterance);
+  // Chromium watchdog: prevent Chrome from freezing queue
+  resumeInterval = setInterval(() => {
+    try {
+      if (window.speechSynthesis && window.speechSynthesis.speaking) {
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      }
+    } catch (e) {}
+  }, 3500);
+
+  // Watchdog timer calculated from text length so speech never hangs the app
+  const wordCount = text.split(/\s+/).length;
+  const maxExpectedMs = Math.max(3000, Math.ceil(wordCount * 450) + 2000);
+  watchdogTimer = setTimeout(() => {
+    if (!hasEnded) {
+      console.warn("Speech synthesis watchdog triggered completion.");
+      finish();
+    }
+  }, maxExpectedMs);
+
+  // Resume synthesis if browser paused it
+  try {
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
+  } catch (e) {}
+
+  // Small delay to ensure browser speech engine accepts utterance
+  setTimeout(() => {
+    try {
+      window.speechSynthesis.speak(utterance);
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+    } catch (err) {
+      console.warn("Error calling speak:", err);
+      finish();
+    }
+  }, 40);
+
   return utterance;
 };
 
 export const cancelSpeech = () => {
   if (typeof window !== "undefined" && "speechSynthesis" in window) {
-    window.speechSynthesis.cancel();
+    try {
+      window.speechSynthesis.cancel();
+    } catch (e) {}
   }
 };
 
@@ -67,40 +137,104 @@ export const isSpeechRecognitionSupported = () => {
 };
 
 /**
+ * Checks if user's speech is a request to log out.
+ */
+export const isLogoutCommand = (transcript = "") => {
+  if (!transcript) return false;
+  const clean = transcript.toLowerCase().trim();
+  const logoutWords = [
+    "logout", "log out", "sign out", "signout", "exit", "quit", "leave",
+    "ಲಾಗ್ ಔಟ್", "ನಿರ್ಗಮಿಸು", "ಮುಕ್ತಾಯ",
+    "लॉग आउट", "साइन आउट", "बाहर निकलें", "लॉगआउट"
+  ];
+  return logoutWords.some(w => clean === w || clean.includes(w));
+};
+
+/**
+ * Checks if user's speech is a request to view or check applications.
+ */
+export const isApplicationsCommand = (transcript = "") => {
+  if (!transcript) return false;
+  const clean = transcript.toLowerCase().trim();
+  const appWords = [
+    "application", "applications", "my application", "my applications", "status",
+    "check application", "check status", "application status", "my status",
+    "ಅರ್ಜಿ", "ಅರ್ಜಿಗಳು", "ನನ್ನ ಅರ್ಜಿ", "ನನ್ನ ಅರ್ಜಿಗಳು", "ಸ್ಥಿತಿ", "ಅರ್ಜಿ ಸ್ಥಿತಿ",
+    "आवेदन", "मेरे आवेदन", "स्थिति", "आवेदन की स्थिति", "मेरी स्थिति"
+  ];
+  return appWords.some(w => clean === w || clean.includes(w));
+};
+
+/**
+ * Checks if user's speech is asking for help or to repeat instructions.
+ */
+export const isHelpCommand = (transcript = "") => {
+  if (!transcript) return false;
+  const clean = transcript.toLowerCase().trim();
+  const helpWords = [
+    "help", "repeat", "options", "what can i say", "what to do", "menu", "instructions", "again",
+    "ಸಹಾಯ", "ಮತ್ತೆ ಹೇಳಿ", "ಆಯ್ಕೆಗಳು", "ಸೂಚನೆಗಳು", "ಏನು ಮಾಡಬೇಕು",
+    "मदद", "सहायता", "दोबारा", "विकल्प", "निर्देश", "क्या करें"
+  ];
+  return helpWords.some(w => clean === w || clean.includes(w));
+};
+
+/**
  * Helper to match user voice input with available services.
  */
 export const matchSpokenService = (transcript, services = []) => {
-  if (!transcript || !services || services.length === 0) return null;
+  if (!transcript) return null;
+
+  const activeServices = (services && services.length > 0) ? services : [
+    { id: "income-certificate", name: { en: "Income Certificate", kn: "ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ", hi: "आय प्रमाण पत्र" } },
+    { id: "pension-certificate", name: { en: "Pension Certificate", kn: "ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ", hi: "पेंशन प्रमाण पत्र" } },
+    { id: "disability-certificate", name: { en: "Disability Certificate", kn: "ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ", hi: "दिव्यांगता प्रमाण पत्र" } },
+  ];
 
   const clean = transcript.toLowerCase().trim();
 
-  // Explicit keywords mapping
+  // Explicit keywords mapping including ordinals and colloquial names
   const keywordMap = [
     {
+      id: "income-certificate",
+      keywords: [
+        "income", "income certificate", "revenue", "revenue certificate", "salary", "salary certificate",
+        "earnings", "annual income", "third", "three", "3",
+        "ಆದಾಯ", "ಇನ್‌ಕಮ್", "ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ", "ಆದಾಯ ಪ್ರಮಾಣ ಪತ್ರ", "ಸಂಬಳ", "ಮೂರನೇ", "ಮೂರು",
+        "आय", "इनकम", "आय प्रमाण पत्र", "आय प्रमाण", "वेतन", "तीसरा", "तीन"
+      ]
+    },
+    {
       id: "pension-certificate",
-      keywords: ["pension", "old age", "widow", "ವೃದ್ಧಾಪ್ಯ", "ಪಿಂಚಣಿ", "ವಿಧವೆ", "ಪೆಂಶನ್", "पेंशन", "वृद्धावस्था", "विधवा"]
+      keywords: [
+        "pension", "pension certificate", "old age", "old age pension", "widow", "widow pension",
+        "senior citizen", "first", "one", "1",
+        "ವೃದ್ಧಾಪ್ಯ", "ಪಿಂಚಣಿ", "ವಿಧವೆ", "ಪೆಂಶನ್", "ವೃದ್ಧಾಪ್ಯ ವೇತನ", "ಮೊದಲ", "ಒಂದು",
+        "पेंशन", "वृद्धावस्था", "विधवा", "पेंशन प्रमाण पत्र", "पहला", "एक"
+      ]
     },
     {
       id: "disability-certificate",
-      keywords: ["disability", "disabled", "handicap", "udid", "ಅಂಗವಿಕಲ", "ವಿಕಲಾಂಗ", "ದಿವ್ಯಾಂಗ", "दिव्यांग", "विकलांग"]
-    },
-    {
-      id: "income-certificate",
-      keywords: ["income", "revenue", "salary", "ಆದಾಯ", "ಇನ್‌ಕಮ್", "आय", "इनकम"]
+      keywords: [
+        "disability", "disability certificate", "disabled", "handicap", "handicapped", "udid",
+        "udid card", "second", "two", "2",
+        "ಅಂಗವಿಕಲ", "ವಿಕಲಾಂಗ", "ದಿವ್ಯಾಂಗ", "ಅಂಗವಿಕಲ ಪ್ರಮಾಣಪತ್ರ", "ಎರಡನೇ", "ಎರಡು",
+        "दिव्यांग", "विकलांग", "दिव्यांगता प्रमाण पत्र", "विकलांगता", "दूसरा", "दो"
+      ]
     }
   ];
 
   for (const item of keywordMap) {
-    if (item.keywords.some(k => clean.includes(k.toLowerCase()))) {
-      const match = services.find(s => s.id === item.id);
+    if (item.keywords.some(k => clean === k || clean.includes(k.toLowerCase()))) {
+      const match = activeServices.find(s => s.id === item.id);
       if (match) return match;
     }
   }
 
   // Generic name matching
-  for (const s of services) {
+  for (const s of activeServices) {
     const sId = s.id?.toLowerCase();
-    if (clean.includes(sId)) return s;
+    if (sId && clean.includes(sId)) return s;
 
     if (typeof s.name === "string" && clean.includes(s.name.toLowerCase())) {
       return s;

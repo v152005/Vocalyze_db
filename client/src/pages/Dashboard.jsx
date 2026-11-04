@@ -4,13 +4,37 @@ import { useAuth } from "../context/AuthContext";
 import DashboardVoiceAssistant from "../components/DashboardVoiceAssistant";
 import { API_BASE_URL } from "../config";
 
+const DEFAULT_SERVICES = [
+  {
+    id: "income-certificate",
+    name: { en: "Income Certificate", kn: "ಆದಾಯ ಪ್ರಮಾಣಪತ್ರ", hi: "आय प्रमाण पत्र" },
+    description: { en: "Apply for Income Certificate for government subsidies and admissions.", kn: "ಸರ್ಕಾರಿ ಸಬ್ಸಿಡಿ ಮತ್ತು ಪ್ರವೇಶಕ್ಕಾಗಿ ಆದಾಯ ಪ್ರಮಾಣಪತ್ರಕ್ಕೆ ಅರ್ಜಿ ಸಲ್ಲಿಸಿ.", hi: "सरकारी सब्सिडी और प्रवेश के लिए आय प्रमाण पत्र हेतु आवेदन करें।" },
+    category: "Revenue",
+    icon: "💰"
+  },
+  {
+    id: "pension-certificate",
+    name: { en: "Pension Certificate", kn: "ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರ", hi: "पेंशन प्रमाण पत्र" },
+    description: { en: "Apply for Old Age, Disability, or Widow pension certificate.", kn: "ವೃದ್ಧಾಪ್ಯ, ಅಂಗವಿಕಲತೆ ಅಥವಾ ವಿಧವಾ ಪಿಂಚಣಿ ಪ್ರಮಾಣಪತ್ರಕ್ಕಾಗಿ ಅರ್ಜಿ ಸಲ್ಲಿಸಿ.", hi: "वृद्धावस्था, दिव्यांग या विधवा पेंशन प्रमाण पत्र के लिए आवेदन करें।" },
+    category: "Social Welfare",
+    icon: "📜"
+  },
+  {
+    id: "disability-certificate",
+    name: { en: "Disability Certificate", kn: "ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ", hi: "दिव्यांगता प्रमाण पत्र" },
+    description: { en: "Apply for Disability Certificate (UDID card) and welfare benefits.", kn: "ವಿಕಲಾಂಗತಾ ಪ್ರಮಾಣಪತ್ರ (UDID ಕಾರ್ಡ್) ಮತ್ತು ಕಲ್ಯಾಣ ಸೌಲಭ್ಯಗಳಿಗಾಗಿ ಅರ್ಜಿ ಸಲ್ಲಿಸಿ.", hi: "दिव्यांगता प्रमाण पत्र (UDID कार्ड) और कल्याणकारी लाभों के लिए आवेदन करें।" },
+    category: "Healthcare",
+    icon: "♿"
+  }
+];
+
 export default function Dashboard() {
   const { user, token, logout, lang } = useAuth();
   const navigate = useNavigate();
 
-  const [services, setServices] = useState([]);
+  const [services, setServices] = useState(DEFAULT_SERVICES);
   const [applications, setApplications] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   // Multilingual translations localized for Dashboard UI
@@ -95,7 +119,9 @@ export default function Dashboard() {
         const appsData = await appsRes.json();
 
         if (servicesRes.ok && appsRes.ok) {
-          setServices(servicesData.services || []);
+          if (servicesData.services && servicesData.services.length > 0) {
+            setServices(servicesData.services);
+          }
           setApplications(appsData.applications || []);
         } else {
           setError(t.errorLoading);
@@ -110,15 +136,6 @@ export default function Dashboard() {
 
     fetchData();
   }, [token, navigate, lang, t.errorLoading]);
-
-  if (loading) {
-    return (
-      <div style={{ background: "#092d2c", minHeight: "100vh", color: "#f6f3eb", display: "flex", justifyContent: "center", alignItems: "center", font: "700 16px Manrope" }}>
-        <div className="grain"></div>
-        {t.loading}
-      </div>
-    );
-  }
 
   return (
     <div style={{ background: "#092d2c", minHeight: "100vh", color: "#f6f3eb", padding: "40px 20px" }}>
@@ -151,7 +168,8 @@ export default function Dashboard() {
                 padding: "8px 16px",
                 color: "#fff",
                 fontSize: "13px",
-                fontWeight: "700"
+                fontWeight: "700",
+                cursor: "pointer"
               }}
             >
               {t.logout}
@@ -159,8 +177,15 @@ export default function Dashboard() {
           </div>
         </header>
 
-        {/* AI Voice Assistant for Blind / Accessible Navigation */}
-        <DashboardVoiceAssistant user={user} services={services} lang={lang} />
+        {/* AI Voice Assistant for Blind / Accessible Navigation (Hands-free voice in & voice out) */}
+        <DashboardVoiceAssistant
+          user={user}
+          services={services}
+          applications={applications}
+          logout={logout}
+          lang={lang}
+          token={token}
+        />
 
         {error && (
           <p style={{ color: "#ffb798", background: "rgba(255, 183, 152, 0.07)", padding: "12px 18px", borderRadius: "12px", fontSize: "13px", marginBottom: "30px" }}>
@@ -248,57 +273,21 @@ export default function Dashboard() {
                         {(() => {
                           const s = services.find(s => s.id === app.serviceId);
                           if (!s) return app.serviceId;
-                          return s.name && typeof s.name === "object" ? (s.name[lang] || s.name.en) : s.name;
+                          return typeof s.name === "object" ? (s.name[lang] || s.name.en) : s.name;
                         })()}
                       </td>
-                      <td style={{ padding: "18px 24px", color: "#aab7b3" }}>
-                        {app.status === "IN_PROGRESS" ? (
-                          <span style={{ fontStyle: "italic", color: "#6c7b77" }}>{t.notSubmitted}</span>
-                        ) : (() => {
-                          if (!app.createdAt) return "-";
-                          const seconds = app.createdAt._seconds !== undefined ? app.createdAt._seconds : app.createdAt.seconds;
-                          const dateObj = seconds !== undefined ? new Date(seconds * 1000) : new Date(app.createdAt);
-                          return isNaN(dateObj.getTime()) ? "-" : dateObj.toLocaleDateString(lang === "kn" ? "kn-IN" : lang === "hi" ? "hi-IN" : "en-US", {
-                            year: "numeric",
-                            month: "long",
-                            day: "numeric"
-                          });
-                        })()}
-                      </td>
+                      <td style={{ padding: "18px 24px", color: "#aab7b3" }}>{app.createdAt ? new Date(app.createdAt).toLocaleDateString() : "-"}</td>
                       <td style={{ padding: "18px 24px" }}>
-                        {app.status?.toUpperCase() === "IN_PROGRESS" ? (
-                          <button
-                            onClick={() => {
-                              sessionStorage.setItem(`active-app-${app.serviceId}`, app.applicationId);
-                              navigate(`/service/${app.serviceId}`);
-                            }}
-                            style={{
-                              background: "#d9f560",
-                              border: "none",
-                              borderRadius: "8px",
-                              padding: "6px 12px",
-                              color: "#12312f",
-                              fontWeight: "800",
-                              fontSize: "11px",
-                              cursor: "pointer",
-                              textTransform: "uppercase"
-                            }}
-                          >
-                            {t.resume}
-                          </button>
-                        ) : (
-                          <span style={{
-                            background: app.status?.toLowerCase() === "approved" ? "rgba(75, 181, 67, 0.15)" : "rgba(217, 245, 96, 0.15)",
-                            color: app.status?.toLowerCase() === "approved" ? "#4bb543" : "#d9f560",
-                            padding: "6px 12px",
-                            borderRadius: "8px",
-                            fontSize: "11px",
-                            fontWeight: "800",
-                            textTransform: "uppercase"
-                          }}>
-                            {app.status}
-                          </span>
-                        )}
+                        <span style={{
+                          padding: "6px 12px",
+                          borderRadius: "12px",
+                          fontSize: "12px",
+                          fontWeight: "800",
+                          background: app.status === "SUBMITTED" ? "rgba(217, 245, 96, 0.15)" : "rgba(255,255,255,0.06)",
+                          color: app.status === "SUBMITTED" ? "#d9f560" : "#aab7b3"
+                        }}>
+                          {app.status || t.notSubmitted}
+                        </span>
                       </td>
                     </tr>
                   ))}
