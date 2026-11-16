@@ -1,24 +1,39 @@
 const { pool } = require("../config/db");
 
 /**
- * Creates a new application row in MySQL.
- * @param {string} uid       - User UID.
- * @param {string} serviceId - Service ID string.
- * @returns {object} The created application data.
+ * Creates a new application row in MySQL applications table.
  */
-const createApplication = async (uid, serviceId) => {
-  const randomSuffix = Math.floor(10000 + Math.random() * 90000);
-  const applicationId = `APP-2026-${randomSuffix}`;
+const createApplication = async (uid, serviceCode) => {
+  const [userRows] = await pool.execute("SELECT id FROM users WHERE uid = ? LIMIT 1", [uid]);
+  if (userRows.length === 0) {
+    throw new Error("User not found");
+  }
+  const userId = userRows[0].id;
 
-  await pool.execute(
-    `INSERT INTO applications (application_id, service_id, user_uid, status, answers)
-     VALUES (?, ?, ?, 'IN_PROGRESS', '{}')`,
-    [applicationId, serviceId, uid]
+  const [svcRows] = await pool.execute(
+    "SELECT id, service_code FROM services WHERE service_code = ? OR id = ? LIMIT 1",
+    [serviceCode, isNaN(Number(serviceCode)) ? -1 : Number(serviceCode)]
+  );
+  if (svcRows.length === 0) {
+    throw new Error("Service not found");
+  }
+  const serviceDbId = svcRows[0].id;
+  const canonicalCode = svcRows[0].service_code;
+
+  const randomSuffix = Math.floor(10000 + Math.random() * 90000);
+  const applicationNumber = `APP-2026-${randomSuffix}`;
+
+  const [res] = await pool.execute(
+    `INSERT INTO applications (application_number, user_id, service_id, status)
+     VALUES (?, ?, ?, 'IN_PROGRESS')`,
+    [applicationNumber, userId, serviceDbId]
   );
 
   return {
-    applicationId,
-    serviceId,
+    id: applicationNumber,
+    applicationId: applicationNumber,
+    applicationDbId: res.insertId,
+    serviceId: canonicalCode,
     userId: uid,
     status: "IN_PROGRESS",
     answers: {},
@@ -28,74 +43,151 @@ const createApplication = async (uid, serviceId) => {
 };
 
 /**
- * Updates application answers (merged patch).
- * @param {string} applicationId
- * @param {object} answers - The full merged answers object.
+ * Updates application answers in the application_answers table.
  */
-const updateApplicationAnswers = async (applicationId, answers) => {
+const updateApplicationAnswers = async (applicationNumber, answers) => {
+  const [appRows] = await pool.execute(
+    "SELECT id, service_id FROM applications WHERE application_number = ? LIMIT 1",
+    [applicationNumber]
+  );
+  if (appRows.length === 0) return;
+
+  const appDbId = appRows[0].id;
+  const serviceDbId = appRows[0].service_id;
+
+  const [qRows] = await pool.execute(
+    "SELECT id, field_key FROM service_questions WHERE service_id = ?",
+    [serviceDbId]
+  );
+  const qMap = {};
+  for (const q of qRows) {
+    qMap[q.field_key] = q.id;
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    for (const [key, value] of Object.entries(answers)) {
+      const qId = qMap[key];
+      if (qId) {
+        const valStr = typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
+        await conn.execute(
+          `INSERT INTO application_answers (application_id, question_id, field_key, answer_value)
+           VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+             answer_value = VALUES(answer_value),
+             updated_at = NOW()`,
+          [appDbId, qId, key, valStr]
+        );
+      }
+    }
+
+    await conn.execute("UPDATE applications SET updated_at = NOW() WHERE id = ?", [appDbId]);
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
+  }
+};
+
+/**
+ * Submits an application by setting status to SUBMITTED and submitted_at to NOW().
+ */
+const submitApplication = async (applicationNumber) => {
   await pool.execute(
-    `UPDATE applications SET answers = ?, updated_at = NOW() WHERE application_id = ?`,
-    [JSON.stringify(answers), applicationId]
+    `UPDATE applications
+     SET status = 'SUBMITTED', submitted_at = NOW(), updated_at = NOW()
+     WHERE application_number = ?`,
+    [applicationNumber]
   );
 };
 
 /**
- * Marks an application as SUBMITTED.
- * @param {string} applicationId
- */
-const submitApplication = async (applicationId) => {
-  await pool.execute(
-    `UPDATE applications SET status = 'SUBMITTED', updated_at = NOW() WHERE application_id = ?`,
-    [applicationId]
-  );
-};
-
-/**
- * Retrieves all applications for a given user UID.
- * @param {string} uid
- * @returns {Array}
+ * Retrieves all applications for a user UID, including answers.
  */
 const getUserApplications = async (uid) => {
-  const [rows] = await pool.execute(
-    "SELECT * FROM applications WHERE user_uid = ? ORDER BY created_at DESC",
-    [uid]
+  const [userRows] = await pool.execute("SELECT id FROM users WHERE uid = ? LIMIT 1", [uid]);
+  if (userRows.length === 0) return [];
+  const userId = userRows[0].id;
+
+  const [apps] = await pool.execute(
+    `SELECT a.id, a.application_number, a.status, a.submitted_at, a.created_at, a.updated_at,
+            s.service_code
+     FROM applications a
+     JOIN services s ON a.service_id = s.id
+     WHERE a.user_id = ?
+     ORDER BY a.created_at DESC`,
+    [userId]
   );
-  return rows.map(rowToApp);
+
+  const results = [];
+  for (const a of apps) {
+    const [ansRows] = await pool.execute(
+      "SELECT field_key, answer_value FROM application_answers WHERE application_id = ?",
+      [a.id]
+    );
+    const answers = {};
+    for (const ans of ansRows) {
+      answers[ans.field_key] = ans.answer_value;
+    }
+
+    results.push({
+      id: a.application_number,
+      applicationId: a.application_number,
+      serviceId: a.service_code,
+      userId: uid,
+      status: a.status,
+      answers,
+      submittedAt: a.submitted_at,
+      createdAt: a.created_at,
+      updatedAt: a.updated_at,
+    });
+  }
+
+  return results;
 };
 
 /**
- * Retrieves a single application by its ID.
- * @param {string} applicationId
- * @returns {object|null}
+ * Retrieves a single application by application_number with answers.
  */
-const getApplicationById = async (applicationId) => {
-  const [rows] = await pool.execute(
-    "SELECT * FROM applications WHERE application_id = ? LIMIT 1",
-    [applicationId]
+const getApplicationById = async (applicationNumber) => {
+  const [apps] = await pool.execute(
+    `SELECT a.id, a.application_number, a.status, a.submitted_at, a.created_at, a.updated_at,
+            s.service_code, u.uid as user_uid
+     FROM applications a
+     JOIN services s ON a.service_id = s.id
+     JOIN users u ON a.user_id = u.id
+     WHERE a.application_number = ? LIMIT 1`,
+    [applicationNumber]
   );
-  if (rows.length === 0) return null;
-  return rowToApp(rows[0]);
-};
 
-// ---- helpers ----
-function rowToApp(row) {
+  if (apps.length === 0) return null;
+  const a = apps[0];
+
+  const [ansRows] = await pool.execute(
+    "SELECT field_key, answer_value FROM application_answers WHERE application_id = ?",
+    [a.id]
+  );
+  const answers = {};
+  for (const ans of ansRows) {
+    answers[ans.field_key] = ans.answer_value;
+  }
+
   return {
-    id: row.application_id,
-    applicationId: row.application_id,
-    serviceId: row.service_id,
-    userId: row.user_uid,
-    status: row.status,
-    answers: tryParse(row.answers, {}),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    id: a.application_number,
+    applicationId: a.application_number,
+    serviceId: a.service_code,
+    userId: a.user_uid,
+    status: a.status,
+    answers,
+    submittedAt: a.submitted_at,
+    createdAt: a.created_at,
+    updatedAt: a.updated_at,
   };
-}
-
-function tryParse(val, fallback) {
-  if (!val) return fallback;
-  try { return typeof val === "string" ? JSON.parse(val) : val; }
-  catch { return fallback; }
-}
+};
 
 module.exports = {
   createApplication,
