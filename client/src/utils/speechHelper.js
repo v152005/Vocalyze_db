@@ -88,9 +88,9 @@ export const speakText = (text, lang = "en", onEnd = null) => {
     } catch (e) {}
   }, 3500);
 
-  // Watchdog timer calculated from text length so speech never hangs the app
+  // Watchdog timer calculated from text length so speech never hangs the app (capped at 9s)
   const wordCount = text.split(/\s+/).length;
-  const maxExpectedMs = Math.max(3000, Math.ceil(wordCount * 450) + 2000);
+  const maxExpectedMs = Math.min(9000, Math.max(2500, Math.ceil(wordCount * 320) + 1200));
   watchdogTimer = setTimeout(() => {
     if (!hasEnded) {
       console.warn("Speech synthesis watchdog triggered completion.");
